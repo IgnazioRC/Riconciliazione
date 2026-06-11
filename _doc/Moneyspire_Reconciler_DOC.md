@@ -47,7 +47,7 @@ ms_reconciler.py       — GUI tkinter: combobox profilo + 4 tab
 
 **Percorso canonico:**
 ```
-~/Library/CloudStorage/Dropbox/Documenti_IRC/Python/stable/Riconciliazione Money.CLD/
+~/Library/CloudStorage/Dropbox/Documenti_IRC/Python/Riconciliazione Money.CLD/
 ```
 
 ---

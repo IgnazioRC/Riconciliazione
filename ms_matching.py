@@ -58,12 +58,15 @@ def _correggi_fuzzy_invertiti(results: list[dict], cfg: dict) -> list[dict]:
     _fz = cfg.get("tolleranze_fuzzy", {})
     soglia_delta = _fz.get("importo_max_eur", 1.0)  # max Δ per considerare "quasi identici"
 
-    # Indici dei risultati fuzzy con una sola transazione Money abbinata
+    # Indici dei risultati fuzzy con una sola transazione Money abbinata.
+    # Esclude i match "esatti puri" (Δ importo = 0 tra banca e Money): un abbinamento
+    # perfetto su importo+data non va mai scambiato per euristica testuale.
     candidati = [
         i for i, r in enumerate(results)
         if r.get("match_type") in (MATCH_FUZZY, MATCH_EXACT)
         and len(r.get("money_txns", [])) == 1
         and not r.get("annullata")
+        and abs(abs(r["bank_txn"]["amount"]) - abs(r["money_txns"][0]["amount"])) > 0
     ]
 
     def _score(bank_desc: str, money_cat: str, money_memo: str, money_payee: str) -> float:
@@ -478,15 +481,20 @@ class ReconcileEngine:
                     JOIN Accounts a ON a.ID = t.AccountID
                     WHERE t.CategoryID = ?
                       AND DATE(t.TransactionDate) BETWEEN ? AND ?
-                """, (self._account_id, d_from, d_to))
+                      AND t.ID NOT IN ({})
+                """.format(",".join("?" * len(used_ids)) if used_ids else "SELECT -1"),
+                    (self._account_id, d_from, d_to, *used_ids))
                 rows6 = cur6.fetchall()
-                conn6.close()
                 conn6.close()
 
                 for r6 in rows6:
                     w6   = r6[2]
+                    d6   = r6[3]
                     rate = r6[5] if r6[5] else 1.0
-                    amt_eur    = w6 * rate if rate != 1.0 else w6
+                    # Simmetrico: la controparte può essere Withdrawal (denaro in uscita da lì)
+                    # o Deposit (denaro in entrata lì, con CategoryID = questo conto)
+                    raw6       = w6 or d6
+                    amt_eur    = raw6 * rate if rate != 1.0 else raw6
                     diff_eur   = abs(abs(bt_amt) - abs(amt_eur))
                     ref        = abs(bt_amt) if bt_amt else 1.0
                     diff_pct   = diff_eur / ref * 100
@@ -962,17 +970,25 @@ def costruisci_transazioni_da_risultati(
         # Gestione trasferimenti verso carta di credito o altro conto
         cat_id_finale = cat_id
         if cat_name == "Trasferimento:carta":
+            # Costruisce la mappa cifre→nome conto dai conti configurati nel profilo.
+            # In config: conti[nome]["numeri_carta"] = ["6421", "6553"] ecc.
+            # Fallback: mappa vuota (nessun trasferimento automatico).
+            carta_map: list[tuple[str, str]] = []
+            for _nome_conto, _cc in cfg.get("conti", {}).items():
+                for _cifre in _cc.get("numeri_carta", []):
+                    carta_map.append((_cifre, _nome_conto))
             # Cerca numero carta nella descrizione completa
-            for cifre, acc_name in [("6421", "6421 Visa Fineco"),
-                                      ("6553", "6421 Visa Fineco"),
-                                      ("5260", "5260 MC Fineco")]:
+            for cifre, acc_name in carta_map:
                 if cifre in desc2:
                     cat_id_finale = None
                     sg["_transfer_to"] = acc_name
                     break
         elif cat_name == "Trasferimento:conto":
-            # Giroconto: CategoryID = ID conto Lombard (o determinato dalla desc)
-            transfer_to = sg.get("_transfer_to", "Fineco Lombard")
+            # Giroconto: CategoryID = ID conto destinazione.
+            # La destinazione può essere determinata dalla regola (_transfer_to)
+            # o dal campo "transfer_default" in config (fallback: contropartita_default).
+            _transfer_default = cfg.get("transfer_default", contropartita_default)
+            transfer_to = sg.get("_transfer_to") or _transfer_default
             cat_id_finale = None
             sg["_transfer_to"] = transfer_to
 

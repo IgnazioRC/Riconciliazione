@@ -30,7 +30,7 @@ if not getattr(_sys, 'frozen', False):
 # --- end IRC shared bootstrap ---
 
 
-VERSION = "2.1.3"
+VERSION = "2.1.4"
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -96,7 +96,7 @@ _CFG_DIR   = _DROPBOX / "Python/_Config/Riconciliazione Moneyspire"
 # Determinata da ProfiloDialog all'avvio. Le variabili globali vengono
 # impostate da _init_profilo() prima che App() venga istanziata.
 _PROFILO   = "IRC"          # "IRC" o "SC" — impostato da _init_profilo()
-APP_TITLE  = "Moneyspire Reconciler  v2.1.3"   # aggiornato dopo selezione profilo
+APP_TITLE  = f"Moneyspire Reconciler  v{VERSION}"   # aggiornato dopo selezione profilo
 CFG_PATH   = _CFG_DIR / "IRC_config.json"    # placeholder — aggiornato da _init_profilo()
 RULES_PATH = _CFG_DIR / "IRC_rules.json"     # placeholder — aggiornato da _init_profilo()
 # Log di audit: Documenti_IRC/Log/ms_reconciler_YYYY.log  (append-only, uno per anno)
@@ -392,7 +392,7 @@ def _init_profilo(root: tk.Tk) -> str:
 
     _PROFILO  = codice
     nome      = ProfiloDialog.PROFILI[codice][0]
-    APP_TITLE = f"Moneyspire Reconciler  v2.1.3  —  {nome} ({codice})"
+    APP_TITLE = f"Moneyspire Reconciler  v{VERSION}  —  {nome} ({codice})"
 
     return codice
 
@@ -419,7 +419,7 @@ def _init_profilo_da_argomento(codice: str):
 
     _PROFILO  = codice
     nome      = ProfiloDialog.PROFILI[codice][0]
-    APP_TITLE = f"Moneyspire Reconciler  v2.1.3  —  {nome} ({codice})"
+    APP_TITLE = f"Moneyspire Reconciler  v{VERSION}  —  {nome} ({codice})"
 
 
 
@@ -449,7 +449,14 @@ def load_config() -> dict:
             if isinstance(v, str):
                 lp[k] = _norm_path(_path_from_cfg(v))
         return cfg
-    return DEFAULT_CONFIG
+    # Nessun fallback silenzioso: un config mancante è un errore di configurazione,
+    # non una condizione da mascherare con DEFAULT_CONFIG (che contiene gli account
+    # IRC e produrrebbe comportamento sbagliato se caricato per il profilo SC).
+    raise FileNotFoundError(
+        f"File di configurazione non trovato: {CFG_PATH}\n"
+        f"Verificare che il profilo sia stato selezionato correttamente e che "
+        f"il file esista in: {CFG_PATH.parent}"
+    )
 
 def save_config(cfg: dict):
     import copy
@@ -1746,6 +1753,12 @@ class DialogRevisione(tk.Toplevel):
                 transfer_to = t.get("_transfer_to","")
                 if transfer_to and not cat_id:
                     cat_id = writer.account_id(transfer_to)
+                    if cat_id is None:
+                        self.app.log(
+                            f"  ⚠️ Giroconto: conto '{transfer_to}' non trovato in "
+                            f"Moneyspire — transazione inserita SENZA categoria "
+                            f"(verificare transfer_default o _transfer_to in config)"
+                        )
 
                 try:
                     new_id = writer.inserisci_transazione(
@@ -1796,6 +1809,10 @@ class DialogRevisione(tk.Toplevel):
         from datetime import date as _date_cls
         import calendar as _cal
         txn_dates = [t["txn_date"] for t in self.da_inserire
+                     # Nota: "_ignore" non viene mai impostato nel flusso attuale
+                     # (l'esclusione reale vive in self._chk_ins). Il filtro è
+                     # innocuo ma è un residuo di refactoring — da rimuovere
+                     # se si unifica la logica di esclusione.
                      if t.get("txn_date") and not t.get("_ignore")]
         if txn_dates:
             ver_from = min(txn_dates)
@@ -1848,6 +1865,8 @@ class DialogRevisione(tk.Toplevel):
                     riepilogo=riepilogo_audit,
                     periodo=periodo)
                 self.app.log(f"  📋 Audit log: {_audit_log_path().name}")
+                # Persiste i contatori hits delle regole usate in questa sessione
+                self.app.rules.save()
                 # ─────────────────────────────────────────────────────────
                 messagebox.showinfo("Completato",
                     f"File Moneyspire aggiornato.\n"
@@ -3344,7 +3363,12 @@ class App(tk.Tk):
         _init_profilo_da_argomento(codice)
 
         self.title(APP_TITLE)
-        self.cfg   = load_config()
+        try:
+            self.cfg = load_config()
+        except FileNotFoundError as _e:
+            from tkinter import messagebox
+            messagebox.showerror("Configurazione mancante", str(_e))
+            return
         self.rules = RulesEngine(str(RULES_PATH))
         self._nb.select(0)
 
